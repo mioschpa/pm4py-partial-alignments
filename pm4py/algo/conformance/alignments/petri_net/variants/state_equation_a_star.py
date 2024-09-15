@@ -47,10 +47,11 @@ from pm4py.util.constants import PARAMETER_CONSTANT_ACTIVITY_KEY
 from pm4py.util.lp import solver as lp_solver
 from pm4py.util.xes_constants import DEFAULT_NAME_KEY
 from pm4py.util import variants_util
-from typing import Optional, Dict, Any, Union
-from pm4py.objects.log.obj import Trace
+from typing import Optional, Dict, Any, Union, Tuple
+from pm4py.objects.log.obj import EventLog, EventStream, Trace
 from pm4py.objects.petri_net.obj import PetriNet, Marking
 from pm4py.util import typing
+import pandas as pd
 
 
 class Parameters(Enum):
@@ -371,7 +372,7 @@ def apply_trace_net(petri_net, initial_marking, final_marking, trace_net, trace_
 
         sync_prod, sync_initial_marking, sync_final_marking, cost_function = construct_cost_aware(
             trace_net, trace_im, trace_fm, petri_net, initial_marking, final_marking, utils.SKIP,
-            trace_net_costs, model_cost_function, revised_sync)
+            trace_net_costs, model_cost_function, revised_sync, None)
 
     max_align_time_trace = exec_utils.get_param_value(Parameters.PARAM_MAX_ALIGN_TIME_TRACE, parameters,
                                                       sys.maxsize)
