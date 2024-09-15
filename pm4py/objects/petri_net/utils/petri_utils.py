@@ -21,8 +21,10 @@ from typing import Optional, Set
 from copy import copy, deepcopy
 
 from pm4py.objects.log.obj import Trace, Event
+from pm4py.objects.petri_net import properties
 from pm4py.objects.petri_net import semantics, properties
-from pm4py.objects.petri_net.obj import PetriNet, Marking, ResetNet, InhibitorNet
+from pm4py.objects.petri_net.utils.networkx_graph import create_networkx_directed_graph
+from pm4py.objects.petri_net.obj import PetriNet, Marking, ResetNet, InhibitorNet, EventNet
 from pm4py.objects.petri_net.saw_net.obj import StochasticArcWeightNet
 from pm4py.util import xes_constants as xes_util
 
@@ -184,6 +186,11 @@ def add_arc_from_to(fr, to, net: PetriNet, weight=1, type=None) -> PetriNet.Arc:
         if isinstance(net, StochasticArcWeightNet):
             a = StochasticArcWeightNet.Arc(fr, to, weight)
             #a.properties[properties.ARCTYPE] = type
+        else:
+            raise Exception("trying to add a stochastic arc on a traditional Petri net object.")
+    elif type == properties.EVENT_ARC:
+        if isinstance(net, EventNet):
+            a = EventNet.EventArc(fr, to, weight)
         else:
             raise Exception("trying to add a stochastic arc on a traditional Petri net object.")
     else:
