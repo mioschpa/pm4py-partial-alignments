@@ -28,10 +28,10 @@ from enum import Enum
 import sys
 from pm4py.util.constants import PARAMETER_CONSTANT_ACTIVITY_KEY, PARAMETER_CONSTANT_CASEID_KEY, CASE_CONCEPT_NAME
 import importlib.util
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, Tuple
 from pm4py.objects.log.obj import EventLog, EventStream, Trace
 from pm4py.objects.petri_net.obj import PetriNet, Marking
-from pm4py.util import typing, constants, pandas_utils
+from pm4py.util import typing
 import pandas as pd
 
 
@@ -41,6 +41,7 @@ class Variants(Enum):
     VERSION_DIJKSTRA_NO_HEURISTICS = variants.dijkstra_no_heuristics
     VERSION_DIJKSTRA_LESS_MEMORY = variants.dijkstra_less_memory
     VERSION_DISCOUNTED_A_STAR = variants.discounted_a_star
+    VERSION_PARTIAL_A_STAR = variants.partial_a_star
 
 class Parameters(Enum):
     PARAM_TRACE_COST_FUNCTION = 'trace_cost_function'
@@ -61,8 +62,21 @@ class Parameters(Enum):
     BEST_WORST_COST_INTERNAL = "best_worst_cost_internal"
     FITNESS_ROUND_DIGITS = "fitness_round_digits"
     SYNCHRONOUS = "synchronous_dijkstra"
-    EXPONENT="theta"
-    ENABLE_BEST_WORST_COST = "enable_best_worst_cost"
+    EXPONENT = "theta"
+
+
+DEFAULT_VARIANT = Variants.VERSION_DIJKSTRA_LESS_MEMORY
+if solver.DEFAULT_LP_SOLVER_VARIANT is not None:
+    DEFAULT_VARIANT = Variants.VERSION_STATE_EQUATION_A_STAR
+
+VERSION_STATE_EQUATION_A_STAR = Variants.VERSION_STATE_EQUATION_A_STAR
+VERSION_DIJKSTRA_NO_HEURISTICS = Variants.VERSION_DIJKSTRA_NO_HEURISTICS
+VERSION_DIJKSTRA_LESS_MEMORY = Variants.VERSION_DIJKSTRA_LESS_MEMORY
+VERSION_DISCOUNTED_A_STAR = Variants.VERSION_DISCOUNTED_A_STAR
+VERSION_PARTIAL_A_STAR = Variants.VERSION_PARTIAL_A_STAR
+
+VERSIONS = {Variants.VERSION_DIJKSTRA_NO_HEURISTICS, Variants.VERSION_DIJKSTRA_NO_HEURISTICS,
+            Variants.VERSION_DIJKSTRA_LESS_MEMORY,VERSION_DISCOUNTED_A_STAR, VERSION_PARTIAL_A_STAR}
 
 
 def __variant_mapper(variant):
@@ -75,20 +89,10 @@ def __variant_mapper(variant):
             variant = Variants.VERSION_DIJKSTRA_NO_HEURISTICS
         elif variant == "Variants.VERSION_DIJKSTRA_LESS_MEMORY":
             variant = Variants.VERSION_DIJKSTRA_LESS_MEMORY
+        elif variant == "Variants.VERSION_PARTIAL_A_STAR":
+            variant = Variants.VERSION_PARTIAL_A_STAR
 
     return variant
-
-
-DEFAULT_VARIANT = Variants.VERSION_DIJKSTRA_LESS_MEMORY
-if solver.DEFAULT_LP_SOLVER_VARIANT is not None:
-    DEFAULT_VARIANT = __variant_mapper(constants.DEFAULT_ALIGNMENTS_VARIANT)
-
-VERSION_STATE_EQUATION_A_STAR = Variants.VERSION_STATE_EQUATION_A_STAR
-VERSION_DIJKSTRA_NO_HEURISTICS = Variants.VERSION_DIJKSTRA_NO_HEURISTICS
-VERSION_DIJKSTRA_LESS_MEMORY = Variants.VERSION_DIJKSTRA_LESS_MEMORY
-
-VERSIONS = {Variants.VERSION_DIJKSTRA_NO_HEURISTICS, Variants.VERSION_DIJKSTRA_NO_HEURISTICS,
-            Variants.VERSION_DIJKSTRA_LESS_MEMORY}
 
 
 def apply(obj: Union[EventLog, EventStream, pd.DataFrame, Trace], petri_net: PetriNet, initial_marking: Marking, final_marking: Marking, parameters: Optional[Dict[Any, Any]] = None, variant=DEFAULT_VARIANT) -> Union[typing.AlignmentResult, typing.ListAlignments]:
@@ -96,9 +100,94 @@ def apply(obj: Union[EventLog, EventStream, pd.DataFrame, Trace], petri_net: Pet
         parameters = {}
     if isinstance(obj, Trace):
         return apply_trace(obj, petri_net, initial_marking, final_marking, parameters=parameters, variant=variant)
+    elif isinstance(obj, PetriNet):
+        # added by MI
+        return apply_partial_trace(obj, petri_net, initial_marking, final_marking, parameters, variant=Variants.VERSION_PARTIAL_A_STAR)
     else:
         return apply_log(obj, petri_net, initial_marking,
                          final_marking, parameters=parameters, variant=variant)
+
+
+def apply_partial_trace(trace_net, petri_net, initial_marking, final_marking, parameters=None, variant=Variants.VERSION_PARTIAL_A_STAR):
+    """
+    apply partial alignments to a trace net
+    Parameters
+    -----------
+    trace_net
+        :class:`pm4py.objects.petri.petrinet.PetriNet` A Petri net representing a partial trace
+    petri_net
+        :class:`pm4py.objects.petri.petrinet.PetriNet` the model to use for the alignment
+    initial_marking
+        :class:`pm4py.objects.petri.petrinet.Marking` initial marking of the net
+    final_marking
+        :class:`pm4py.objects.petri.petrinet.Marking` final marking of the net
+    variant
+        selected variant of the algorithm, possible values: {\'Variants.PARTIAL_A_STAR \'}
+    parameters
+        :class:`dict` parameters of the algorithm, for key \'state_equation_a_star\':
+            Parameters.ACTIVITY_KEY -> Attribute in the log that contains the activity
+            Parameters.PARAM_MODEL_COST_FUNCTION ->
+            mapping of each transition in the model to corresponding synchronous costs
+            Parameters.PARAM_SYNC_COST_FUNCTION ->
+            mapping of each transition in the model to corresponding model cost
+            Parameters.PARAM_TRACE_COST_FUNCTION ->
+            mapping of each index of the trace to a positive cost value
+    Returns
+    -----------
+    alignment # TODO edit returns
+        :class:`dict` with keys **alignment**, **cost**, **visited_states**, **queued_states** and
+        **traversed_arcs**
+        The alignment is a sequence of labels of the form (a,t), (a,>>), or (>>,t)
+        representing synchronous/log/model-moves.
+    """
+    if parameters is None:
+        parameters = copy({PARAMETER_CONSTANT_ACTIVITY_KEY: DEFAULT_NAME_KEY})
+
+    variant = __variant_mapper(variant)
+    parameters = copy(parameters)
+    best_worst_cost = exec_utils.get_param_value(Parameters.BEST_WORST_COST_INTERNAL, parameters,
+                                                 __get_best_worst_cost(petri_net, initial_marking, final_marking,
+                                                                       variant, parameters))
+
+    ali = variants.partial_a_star.apply(trace_net, petri_net, initial_marking, final_marking,
+                                                parameters=parameters)
+
+    trace_cost_function = exec_utils.get_param_value(Parameters.PARAM_TRACE_COST_FUNCTION, parameters, [])
+    # Instead of using the length of the trace, use the sum of the trace cost function
+    trace_cost_function_sum = sum(trace_cost_function)
+
+    # TODO add more parameters to partial alignment
+    if variant is Variants.VERSION_PARTIAL_A_STAR:
+        return ali
+
+    if ali is not None and best_worst_cost is not None:
+        ltrace_bwc = trace_cost_function_sum + best_worst_cost
+
+        fitness_num = ali['cost'] // align_utils.STD_MODEL_LOG_MOVE_COST
+        fitness_den = ltrace_bwc // align_utils.STD_MODEL_LOG_MOVE_COST
+        fitness = 1 - fitness_num / fitness_den if fitness_den > 0 else 0
+
+        # other possibility: avoid integer division but proceed to rounding.
+        # could lead to small differences with respect to the adopted-since-now fitness
+        # (since it is rounded)
+
+        """
+        initial_trace_cost_function = exec_utils.get_param_value(Parameters.PARAM_TRACE_COST_FUNCTION, parameters, None)
+        initial_model_cost_function = exec_utils.get_param_value(Parameters.PARAM_MODEL_COST_FUNCTION, parameters, None)
+        initial_sync_cost_function = exec_utils.get_param_value(Parameters.PARAM_SYNC_COST_FUNCTION, parameters, None)
+        uses_standard_cost_function = initial_trace_cost_function is None and initial_model_cost_function is None and \
+                                    initial_sync_cost_function is None
+
+        fitness = 1 - ali['cost'] / ltrace_bwc if ltrace_bwc > 0 else 0
+        fitness_round_digits = exec_utils.get_param_value(Parameters.FITNESS_ROUND_DIGITS, parameters, 3)
+        fitness = round(fitness, fitness_round_digits)
+        """
+
+        ali["fitness"] = fitness
+        # returning also the best worst cost, for log fitness computation
+        ali["bwc"] = ltrace_bwc
+
+    return ali
 
 
 def apply_trace(trace, petri_net, initial_marking, final_marking, parameters=None,
@@ -139,8 +228,8 @@ def apply_trace(trace, petri_net, initial_marking, final_marking, parameters=Non
 
     variant = __variant_mapper(variant)
     parameters = copy(parameters)
-
-    enable_best_worst_cost = exec_utils.get_param_value(Parameters.ENABLE_BEST_WORST_COST, parameters, True)
+    best_worst_cost = exec_utils.get_param_value(Parameters.BEST_WORST_COST_INTERNAL, parameters,
+                                                 __get_best_worst_cost(petri_net, initial_marking, final_marking, variant, parameters))
 
     ali = exec_utils.get_variant(variant).apply(trace, petri_net, initial_marking, final_marking,
                                                  parameters=parameters)
@@ -149,20 +238,32 @@ def apply_trace(trace, petri_net, initial_marking, final_marking, parameters=Non
     # Instead of using the length of the trace, use the sum of the trace cost function
     trace_cost_function_sum = sum(trace_cost_function)
 
-    if enable_best_worst_cost:
-        best_worst_cost = exec_utils.get_param_value(Parameters.BEST_WORST_COST_INTERNAL, parameters,
-                                                     __get_best_worst_cost(petri_net, initial_marking, final_marking, variant, parameters))
+    if ali is not None and best_worst_cost is not None:
+        ltrace_bwc = trace_cost_function_sum + best_worst_cost
 
-        if ali is not None and best_worst_cost is not None:
-            ltrace_bwc = trace_cost_function_sum + best_worst_cost
+        fitness_num = ali['cost'] // align_utils.STD_MODEL_LOG_MOVE_COST
+        fitness_den = ltrace_bwc // align_utils.STD_MODEL_LOG_MOVE_COST
+        fitness = 1 - fitness_num / fitness_den if fitness_den > 0 else 0
 
-            fitness_num = ali['cost'] // align_utils.STD_MODEL_LOG_MOVE_COST
-            fitness_den = ltrace_bwc // align_utils.STD_MODEL_LOG_MOVE_COST
-            fitness = 1 - fitness_num / fitness_den if fitness_den > 0 else 0
+        # other possibility: avoid integer division but proceed to rounding.
+        # could lead to small differences with respect to the adopted-since-now fitness
+        # (since it is rounded)
 
-            ali["fitness"] = fitness
-            # returning also the best worst cost, for log fitness computation
-            ali["bwc"] = ltrace_bwc
+        """
+        initial_trace_cost_function = exec_utils.get_param_value(Parameters.PARAM_TRACE_COST_FUNCTION, parameters, None)
+        initial_model_cost_function = exec_utils.get_param_value(Parameters.PARAM_MODEL_COST_FUNCTION, parameters, None)
+        initial_sync_cost_function = exec_utils.get_param_value(Parameters.PARAM_SYNC_COST_FUNCTION, parameters, None)
+        uses_standard_cost_function = initial_trace_cost_function is None and initial_model_cost_function is None and \
+                                    initial_sync_cost_function is None
+            
+        fitness = 1 - ali['cost'] / ltrace_bwc if ltrace_bwc > 0 else 0
+        fitness_round_digits = exec_utils.get_param_value(Parameters.FITNESS_ROUND_DIGITS, parameters, 3)
+        fitness = round(fitness, fitness_round_digits)
+        """
+
+        ali["fitness"] = fitness
+        # returning also the best worst cost, for log fitness computation
+        ali["bwc"] = ltrace_bwc
 
     return ali
 
@@ -200,8 +301,6 @@ def apply_log(log, petri_net, initial_marking, final_marking, parameters=None, v
         if not check_soundness.check_easy_soundness_net_in_fin_marking(petri_net, initial_marking, final_marking):
             raise Exception("trying to apply alignments on a Petri net that is not a easy sound net!!")
 
-    enable_best_worst_cost = exec_utils.get_param_value(Parameters.ENABLE_BEST_WORST_COST, parameters, True)
-
     variant = __variant_mapper(variant)
 
     start_time = time.time()
@@ -210,12 +309,10 @@ def apply_log(log, petri_net, initial_marking, final_marking, parameters=None, v
     max_align_time_case = exec_utils.get_param_value(Parameters.PARAM_MAX_ALIGN_TIME_TRACE, parameters,
                                                      sys.maxsize)
 
+    best_worst_cost = __get_best_worst_cost(petri_net, initial_marking, final_marking, variant, parameters)
     variants_idxs, one_tr_per_var = __get_variants_structure(log, parameters)
     progress = __get_progress_bar(len(one_tr_per_var), parameters)
-
-    if enable_best_worst_cost:
-        best_worst_cost = __get_best_worst_cost(petri_net, initial_marking, final_marking, variant, parameters)
-        parameters[Parameters.BEST_WORST_COST_INTERNAL] = best_worst_cost
+    parameters[Parameters.BEST_WORST_COST_INTERNAL] = best_worst_cost
 
     all_alignments = []
     for trace in one_tr_per_var:
@@ -263,13 +360,9 @@ def apply_multiprocessing(log, petri_net, initial_marking, final_marking, parame
 
     num_cores = exec_utils.get_param_value(Parameters.CORES, parameters, multiprocessing.cpu_count() - 2)
 
-    enable_best_worst_cost = exec_utils.get_param_value(Parameters.ENABLE_BEST_WORST_COST, parameters, True)
-
+    best_worst_cost = __get_best_worst_cost(petri_net, initial_marking, final_marking, variant, parameters)
     variants_idxs, one_tr_per_var = __get_variants_structure(log, parameters)
-
-    if enable_best_worst_cost:
-        best_worst_cost = __get_best_worst_cost(petri_net, initial_marking, final_marking, variant, parameters)
-        parameters[Parameters.BEST_WORST_COST_INTERNAL] = best_worst_cost
+    parameters[Parameters.BEST_WORST_COST_INTERNAL] = best_worst_cost
 
     all_alignments = []
 
@@ -316,9 +409,9 @@ def __get_variants_structure(log, parameters):
     variants_idxs = {}
     one_tr_per_var = []
 
-    if pandas_utils.check_is_pandas_dataframe(log):
+    if type(log) is pd.DataFrame:
         case_id_key = exec_utils.get_param_value(Parameters.CASE_ID_KEY, parameters, CASE_CONCEPT_NAME)
-        traces = [tuple(x) for x in log.groupby(case_id_key)[activity_key].agg(list).to_dict().values()]
+        traces = list(log.groupby(case_id_key)[activity_key].apply(tuple))
         for idx, trace in enumerate(traces):
             if trace not in variants_idxs:
                 variants_idxs[trace] = [idx]
@@ -342,7 +435,7 @@ def __get_variants_structure(log, parameters):
 
 
 def __get_progress_bar(num_variants, parameters):
-    show_progress_bar = exec_utils.get_param_value(Parameters.SHOW_PROGRESS_BAR, parameters, constants.SHOW_PROGRESS_BAR)
+    show_progress_bar = exec_utils.get_param_value(Parameters.SHOW_PROGRESS_BAR, parameters, True)
     progress = None
     if importlib.util.find_spec("tqdm") and show_progress_bar and num_variants > 1:
         from tqdm.auto import tqdm
@@ -403,4 +496,4 @@ def get_diagnostics_dataframe(log, align_output, parameters=None):
 
         diagn_stream.append({"case_id": case_id, "cost": cost, "fitness": fitness, "is_fit": is_fit})
 
-    return pandas_utils.instantiate_dataframe(diagn_stream)
+    return pd.DataFrame(diagn_stream)
