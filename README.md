@@ -1,3 +1,10 @@
+# pm4py with partial alignments
+
+This repository contains the forked pm4py project with an additional algorithm for conformance checking using partial alignments.
+The new algorithm is based on the paper "Conformance Checking Based on Partially Ordered Event Data" by X. Lu, D. Fahland, W.M.P. van der Aalst (http://dx.doi.org/10.1007/978-3-319-15895-2_7).
+There is an additional entry in the list of available alignment algortihm variants, now addionally with so-called partial alignments.
+Partial alignments rely on partially ordered traces and therefore outputs an partially ordered alignment.
+
 # pm4py
 pm4py is a python library that supports (state-of-the-art) process mining algorithms in python. 
 It is open source (licensed under GPL) and intended to be used in both academia and industry projects.
